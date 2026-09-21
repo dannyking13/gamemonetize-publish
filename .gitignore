@@ -1,0 +1,7 @@
+.gm_credentials
+.gm_session.json
+.hf_token
+.gm_assets/
+node_modules/
+*.zip
+__pycache__/

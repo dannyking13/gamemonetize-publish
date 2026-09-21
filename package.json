@@ -1,0 +1,15 @@
+{
+  "name": "gamemonetize-publish",
+  "version": "1.0.0",
+  "description": "Integrate the GameMonetize SDK into any HTML5 game and publish it end-to-end on the GameMonetize dashboard (Playwright automation + AI assets)",
+  "main": "scripts/publish.js",
+  "scripts": {
+    "publish": "node scripts/publish.js",
+    "assets": "python3 scripts/gen_assets.py"
+  },
+  "keywords": ["gamemonetize", "html5", "games", "sdk", "playwright", "publishing", "ads"],
+  "license": "MIT",
+  "dependencies": {
+    "playwright": "^1.45.0"
+  }
+}

@@ -1,0 +1,303 @@
+---
+name: gamemonetize-publish
+description: Integrate the GameMonetize SDK into ANY user-provided HTML5 game (any engine — Construct, Phaser, PixiJS, Unity WebGL, Godot, custom canvas) and publish it end-to-end on the GameMonetize developer dashboard — add game, get the GameId, inject it into SDK_OPTIONS, package the ZIP, upload (with the x-zip-compressed MIME trick), generate AI thumbnails (FLUX, no text), fill metadata, run the in-modal "Verify Game" SDK check by actually playing the game, then Request Activation. Use when the user wants to "publish a game on GameMonetize", "integrate gamemonetize sdk", "submit a game to gamemonetize", or "release an html5 game on gamemonetize".
+version: 1.0.0
+author: buffy
+tags: [games, gamemonetize, sdk, playwright, publishing, ads]
+---
+
+# GameMonetize SDK Integration & Automated Publishing
+
+This skill lets an AI agent take a **user-provided HTML5 game** (any engine, any
+structure) and: (1) integrate the GameMonetize SDK correctly (events + ad
+breaks, bridged onto the game's existing ad/pause calls if it came from another
+portal), (2) generate the 3 required thumbnails with FREE AI generation
+(FLUX — no text on assets), (3) package a compliant ZIP, and (4) publish it
+end-to-end on `gamemonetize.com/account` via Playwright — from login to
+**"Request activation"**, without any human interaction.
+
+Everything below was validated in a real end-to-end run (game created →
+GameId `tsoe9hid…` injected → zip uploaded and unpacked → build live →
+`SDK_IMPLEMENTED` returned by the official checker → activation requested,
+game in review).
+
+The **game is NOT created by the agent**: the user supplies the game (a folder
+with `index.html` or an existing zip). The agent integrates the SDK, prepares
+assets/metadata, and publishes.
+
+## 0. Prerequisites
+
+- Node.js + Playwright (`npm i playwright` + `npx playwright install chromium`)
+- `xvfb-run` (Linux) — launch the browser **headed under Xvfb**, never plain
+  headless (the dashboard tolerates headless for pure HTTP, but the Verify
+  modal + IMA ads behave best headed; the gamepix skill's rule applies here too)
+- Python3 + `pillow` for asset generation (`pip install pillow`)
+- GameMonetize developer account: **email + password**. Credentials are read
+  from env `GM_EMAIL` / `GM_PASSWORD`, or from the git-ignored
+  `scripts/.gm_credentials` file (two lines: email, password).
+- User agent: `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36`
+
+## 1. Hard-won platform knowledge (read first!)
+
+### Dashboard architecture (verified)
+- There is **no** `gamemonetize.com/dashboard` (it's a 404). The dashboard is
+  **`https://gamemonetize.com/account/index.php`**.
+- Login: `https://gamemonetize.com/login` — plain form: `input[type="email"]`,
+  `input[name="password"]`, `button[type="submit"]`. After login you land on
+  `/account/index.php`. Save `storageState` to a session file and reuse it.
+- Add game: `https://gamemonetize.com/account/gameadd.php` — fields
+  `input[name="name"]` + `input[name="nameid"]` (auto-slugged), button
+  **"Add Game"** → redirects to `/account/editgame.php?id=<numericId>`.
+  **The numeric id is NOT the GameId** (see below).
+- My games: `/account/games.php` — table rows with game name + "Edit Game"
+  links (`editgame.php?id=<numericId>`).
+- **Edit page (the everything page)**: `/account/editgame.php?id=<numericId>` —
+  zip upload, 3 thumbnails, all metadata, "Verify Game", "Save Changes",
+  "Request activation".
+
+### GameId (critical!)
+The **GameId is a 32-char token** (e.g. `tsoe9hidwrfs1435rnearr9yqvgxs6vu`),
+not the numeric page id. Get it from the edit page — it appears in:
+- `input[name="custId"]` → `value` attribute = the GameId,
+- the "game URL" fields: `https://uncached.gamemonetize.com/<GameId>/` and
+  `https://html5.gamemonetize.com/<GameId>/`.
+Extract with: `page.$eval('input[name="custId"]', e => e.value)` or the regex
+`/uncached\.gamemonetize\.com\/([a-z0-9]{32})\//` on `page.content()`.
+
+### URLs of the live build
+- **`https://uncached.gamemonetize.com/<GameId>/`** — fresh build, available
+  seconds after upload. Use this to verify the build (fetch → expect 200 +
+  your `index.html` content, with `sdk.js` and the GameId inside).
+- `https://html5.gamemonetize.com/<GameId>/` — the public/CDN URL; may return
+  403 until the game is verified/activated. The Verify modal uses
+  `https://html5.gamemonetize.co/<GameId>/` (note `.co`) with
+  `?m=account&__inmodal=true` params.
+
+### The ZIP upload MIME trap (THE gotcha of the whole platform)
+The dashboard uses **Dropzone.js** (4 instances on the edit page):
+- instance #0 → zip upload, `upload.php?gameid=<GameId>&id=<numericId>`,
+  accepts `application/zip,application/octet-stream,application/x-zip-compressed,multipart/x-zip,.zip`
+- instances #1–3 → thumbnails, `upload_img.php?gameid=<GameId>&id=<numericId>&size=1|2|3`,
+  accepts **`.jpg` only**, at exactly **512×384 (size=1), 512×512 (size=2),
+  512×340 (size=3)**.
+
+⚠️ **`page.setInputFiles()` on the Dropzone input sends the file with a MIME
+type the server REJECTS**: the upload answers
+`{"status":"The file you are trying to upload is not a .zip file. Please try again."}`
+even though the file IS a zip. Filling Dropzone's hidden input does not help.
+
+✅ **THE FIX — bypass Dropzone with a direct multipart POST** (same cookies:
+use `context.request` of a logged-in context):
+```js
+const r = await ctx.request.post(
+  `https://gamemonetize.com/account/upload.php?gameid=${gid}&id=${numId}`,
+  { multipart: { file: { name: 'game.zip', mimeType: 'application/x-zip-compressed', buffer: zipBuf } } });
+// success body: {"status":"Your .zip file was uploaded and unpacked."}
+```
+`application/x-zip-compressed` + filename ending in `.zip` is the combination
+the server accepts. Thumbnails: same call to `upload_img.php?...&size=N` with
+`mimeType: 'image/jpeg'`, name ending `.jpg`.
+
+The build goes live on `uncached.gamemonetize.com/<GameId>/` within seconds of
+the "unpacked" response (poll 3–4×/5s to confirm).
+
+### Verify Game — the SDK check REQUIRES a real ad call
+Clicking `a:has-text("Verify Game")` opens a custom modal
+(`.sparkling-modal-frame`) containing an iframe `#modal-frame` that loads the
+game. The checker inside validates:
+1. the **real SDK** (`sdk.js`) is loaded,
+2. `window.SDK_OPTIONS.gameId` equals **this game's** GameId,
+3. **`sdk.showBanner()` actually gets CALLED during the session** — you must
+   PLAY the game inside the iframe until it naturally triggers an ad break
+   (game over, level end…). When it does, the checker posts
+   `{"type":"SDK_IMPLEMENTED"}` and a real Google IMA ad is served.
+
+⚠️ The **"Request activation" button state is SERVER-RENDERED at page load**.
+Nothing changes live in the modal flow. After a successful verify you must
+**close the modal and RELOAD `editgame.php`** — then `input[name="activation"]`
+loses its `disabled` attribute. Then click it (accept any `dialog`), and the
+page now shows **"Cancel review"** = the game is submitted to their content
+team. (Unlike GamePix, GameMonetize has a "Cancel review" button — the build
+is NOT locked while in review; you can re-upload a new zip anytime.)
+
+### Ad policy (enforced by review)
+- Frequency-cap `sdk.showBanner()` (e.g. ≥45s between calls) and only at
+  natural breaks (game over, level end) — never timer-based mid-gameplay.
+- MANDATORY: on `SDK_GAME_PAUSE` pause the game loop AND mute all audio;
+  on `SDK_GAME_START` resume + unmute. Background audio during ads = reject.
+- One ad flow at a time; never call `showBanner()` re-entrantly.
+
+## 2. Integrate the SDK (mandatory first script)
+
+Insert in `<head>` or before the game scripts in `index.html`:
+
+```html
+<script type="text/javascript">
+window.SDK_OPTIONS = {
+  gameId: "THE_32_CHAR_GAME_ID",
+  onEvent: function (a) {
+    switch (a.name) {
+      case "SDK_GAME_START":
+        // advertisement done, resume game logic and unmute audio
+        break;
+      case "SDK_GAME_PAUSE":
+        // advertisement ready, pause game logic and MUTE audio
+        break;
+      case "SDK_READY":
+        break;
+    }
+  }
+};
+(function (a, b, c) {
+  var d = a.getElementsByTagName(b)[0];
+  a.getElementById(c) || (a = a.createElement(b), a.id = c, a.src = "https://api.gamemonetize.com/sdk.js", d.parentNode.insertBefore(a, d))
+})(document, "script", "gamemonetize-sdk");
+</script>
+```
+
+Ad call (at natural breaks, frequency-capped):
+```js
+if (typeof sdk !== 'undefined' && sdk.showBanner) sdk.showBanner();
+```
+
+Leave the GameId as the placeholder `__GM_GAME_ID__` in the file if you prefer:
+`scripts/publish.js` injects the real GameId automatically after creating the
+game (`GM_GAME_ID_PLACEHOLDER`, default `__GM_GAME_ID__`, or it replaces the
+existing `gameId: "..."` value in `SDK_OPTIONS` when `GM_INJECT_SDK=true`).
+
+### 2a. Games coming from another portal: install the AD BRIDGE
+If the user's game calls another platform's SDK (Poki, GameSnacks,
+GameDistribution…), grep the code and bridge those calls onto GameMonetize
+**instead of stripping them** — the game already pauses itself around its own
+ad-break flow, which is exactly what the SDK expects:
+
+| Game calls | Bridge to |
+|---|---|
+| `PokiSDK.commercialBreak()` / `GameSnacks.ad.break({type:"next"})` / GD `showAd()` | pause+mute locally, `sdk.showBanner()`, resume+unmute in the `SDK_GAME_START` event |
+| `PokiSDK.rewardedBreak()` / reward flows | `sdk.showBanner()` before granting the reward (resume logic gates the reward on ad completion) |
+| `PokiSDK.gameLoadingFinished()` / `GameSnacks.game.ready()` | nothing needed (SDK handles itself) |
+| mute/pause helpers | wire them into `SDK_GAME_PAUSE` / `SDK_GAME_START` |
+
+Minimal bridge pattern (load before game scripts):
+```js
+window.__gmAdBreak = function (onDone) {
+  var done = false;
+  var finish = function () { if (!done) { done = true; onDone && onDone(); } };
+  window.__gmResumeHook = finish;           // SDK_GAME_START calls this
+  if (typeof sdk !== 'undefined' && sdk.showBanner) sdk.showBanner();
+  setTimeout(finish, 8000);                  // hard timeout: never freeze gameplay
+};
+```
+…and in `SDK_OPTIONS.onEvent`: `case "SDK_GAME_START": window.__gmResumeHook && window.__gmResumeHook();`
+
+A game with NO ad hooks at all: add `sdk.showBanner()` on game-over / level-end
+yourself (find the death/levelComplete handler), plus the pause/mute events.
+
+## 3. Compliance checklist (review will fail otherwise)
+
+- ZIP with **`index.html` at the archive ROOT** (not inside a folder). Small build.
+- All resources relative paths; no external links/analytics/third-party ad SDKs.
+- Mute audio during `SDK_GAME_PAUSE` (hard requirement — see §1).
+- Works in an iframe (the Verify modal runs it at 900×600; set
+  `width`/`height` metadata to your real viewport).
+- Thumbnails: **3 JPGs — 512×384, 512×512, 512×340** — representative of the
+  game, **NO text/names/logos on assets** — generate with AI (§5).
+- Description: original, meaningful, no AI boilerplate. Controls field:
+  explain input (mouse/drag/keys), Desktop + Mobile.
+- Categories: **min 2**. Tags: pick ~8–10 relevant ones (they are required).
+
+## 4. Automated publishing via Playwright
+
+Full working implementation: `scripts/publish.js` (this repo). Usage:
+
+```bash
+GM_EMAIL=you@example.com GM_PASSWORD='secret' \
+GM_TITLE="My Game" GM_GAME_DIR=./my-game \
+GM_CATEGORIES="Arcade,Hypercasual,Action" GM_TAGS="1 Player,Avoid,HTML5,Mobile" \
+GM_DESC="Original 200-400 char description..." \
+GM_CONTROLS="Desktop: mouse / arrows. Mobile: touch and drag." \
+GM_WIDTH=960 GM_HEIGHT=540 \
+GM_PROMPT="neon arcade orbs and gems on a dark space background, vibrant colors, clean vector style" \
+xvfb-run -a node scripts/publish.js
+# optional: GM_ZIP=game.zip (skip packaging), GM_THUMB_DIR=./assets (skip AI gen),
+#           GM_EXISTING_ID=86697 (edit an existing game instead of creating one)
+```
+
+The script performs, in order (each step verified):
+1. Login (re-login if redirected to /login; saves `scripts/.gm_session.json`).
+2. Create the game via `gameadd.php` (or reuse `GM_EXISTING_ID`) → capture the
+   numeric id from the redirect to `editgame.php?id=<numericId>`.
+3. Extract the **GameId** from `input[name="custId"]`.
+4. Inject the GameId into `index.html` (placeholder replacement).
+5. Package the ZIP (`index.html` at root) if `GM_ZIP` not provided.
+6. Direct-multipart upload of the ZIP (x-zip-compressed) → expect
+   `"Your .zip file was uploaded and unpacked."` → poll
+   `uncached.gamemonetize.com/<GameId>/` until 200.
+7. Generate (or reuse) the 3 JPG thumbnails → direct-multipart upload to
+   `upload_img.php?...&size=1/2/3`.
+8. Fill metadata: name, categories (≥2), tags, desc, controls, width/height,
+   mobile checkbox → **Save Changes**.
+9. **Verify Game**: open the modal, PLAY the game inside `#modal-frame`
+   (click + steer, up to ~90s in two rounds) until `SDK_IMPLEMENTED` is
+   observed in the frame's messages/console, close the modal.
+10. Reload the edit page → confirm `input[name="activation"]` is enabled →
+    click **Request activation** (auto-accept dialogs) → confirm the page now
+    shows **"Cancel review"**.
+
+### Gotchas that will bite you
+- The zip MIME trap (§1) — never use Dropzone's input for the zip.
+- The activation button only unlocks after a **page reload** post-verify.
+- If verification fails (`SDK_IMPLEMENTED` never seen): check that the iframe
+  actually runs YOUR build (the modal URL contains your GameId), that
+  `sdk.showBanner()` is reachable (death/level path), and that no console
+  errors break the game. Then retry the verify round.
+- `https://gamemonetize.com/dashboard` is a 404; always use `/account/...`.
+- The tags `<select>` is a select2 widget with 579 options; set the underlying
+  `select[name="tags[]"]` options via JS + `change` event (works fine), or
+  drive the select2 UI with real clicks.
+- Metadata Save is a plain form POST back to `editgame.php` — re-check the
+  fields persisted after saving.
+
+## 5. Creating thumbnails with FREE AI generation (mandatory method)
+
+Use `scripts/gen_assets.py` — same proven method as the gamepix-publish skill:
+**FLUX via anonymous Gradio API of Hugging Face Spaces**, no account, no API
+key. Optional `HF_TOKEN` (env or `scripts/.hf_token`) raises the quota.
+
+```bash
+pip install pillow
+python3 scripts/gen_assets.py \
+  --prompt "two glowing neon orbs collecting gems on a dark starfield, \
+vibrant cyan and magenta, clean vector style" \
+  --out-dir ./assets
+# -> assets/thumb_512x384.jpg + assets/thumb_512x512.jpg + assets/thumb_512x340.jpg
+```
+
+Rules (same as gamepix):
+- `--prompt` is a **VISUAL description of the game only** — NEVER render the
+  title or any words. The script appends a no-text ban-suffix to every prompt.
+- Generates 2 images (landscape 1024×768 + square 1024×1024), then cover-crops
+  to the 3 exact GM sizes and saves as JPEG (quality 88, well under limits).
+- Spaces tried in order: `FLUX.1-schnell` (fast) then `FLUX.1-dev`, with
+  exponential backoff (anonymous ZeroGPU quota is per-IP and rolling).
+- If all AI attempts fail, falls back to PIL-drawn text-free neon thumbs so
+  publishing never blocks.
+
+## 6. What "done" looks like
+
+- `uncached.gamemonetize.com/<GameId>/` serves your build (200, contains
+  `sdk.js` + your GameId).
+- Edit page shows **"Cancel review"** (activation requested) instead of the
+  disabled "Request activation" inputs.
+- My Games list shows the game with its release date set.
+- Notify the user: submitted, their content team reviews (usually a few days);
+  the build can be updated anytime by re-uploading a zip (no review lock);
+  "Cancel review" withdraws it.
+
+## References
+
+- SDK doc: https://gamemonetize.com/sdk and
+  https://github.com/MonetizeGame/GameMonetize.com-SDK
+- Dashboard: https://gamemonetize.com/account/index.php (login: /login)
+- Related skill: `gamepix-publish` (same asset-generation method, same
+  Playwright style, GamePix dashboard automation)
