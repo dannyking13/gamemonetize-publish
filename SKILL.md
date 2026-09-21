@@ -206,6 +206,19 @@ yourself (find the death/levelComplete handler), plus the pause/mute events.
   explain input (mouse/drag/keys), Desktop + Mobile.
 - Categories: **min 2**. Tags: pick ~8–10 relevant ones (they are required).
 
+### Game naming rule (IMPORTANT — read before publishing)
+The GitHub repo name / project folder name is just an **internal label** — the
+games shipped by this workflow carry **NO name inside the build** (no title in
+the zip, no text on the assets). Therefore:
+- **NEVER** blindly reuse the GitHub repo/folder name as the game title.
+- At publish time, the agent **chooses the game name itself**, right before
+  going live: a fresh, catchy, **on-topic** title that reflects what the game
+  actually does (read the code, play the game first). Not off-topic, not
+  generic ("My Game", "Untitled"), not a clone of a famous title.
+- The chosen title becomes `GM_TITLE` (dashboard name + nameid slug + zip
+  filename). Assets stay text-free (§5) — the title lives ONLY in the
+  dashboard metadata.
+
 ## 4. Automated publishing via Playwright
 
 Full working implementation: `scripts/publish.js` (this repo). Usage:
