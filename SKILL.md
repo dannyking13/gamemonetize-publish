@@ -395,6 +395,17 @@ vibrant cyan and magenta, clean vector style" \
 Rules (same as gamepix):
 - `--prompt` is a **VISUAL description of the game only** — NEVER render the
   title or any words. The script appends a no-text ban-suffix to every prompt.
+- **PROMPT PRECISION RULE (critical)**: the prompt must describe **what the
+  game IS and what the player SEES while playing**, not just the title's
+  literal words. Method that works: screenshot the real game (menu + gameplay),
+  look at the shots, then describe the actual protagonist(s), signature
+  objects, palette and background style. A title-only prompt produces
+  off-target art (e.g. "Orb Toss" alone → random creature throwing orbs;
+  describing the real game → "basketball hoop with red rim and white net,
+  orange basketball flying through a bright blue sky, two funny white cartoon
+  birds, flat vector mobile game art, bold black outlines"). Name the art
+  style too: "flat cartoon mobile game art, bold black outlines, clean vector
+  style".
 - Generates 2 images (landscape 1024×768 + square 1024×1024), then cover-crops
   to the 3 exact GM sizes and saves as JPEG (quality 88, well under limits).
 - Spaces tried in order: `FLUX.1-schnell` (fast) then `FLUX.1-dev`, with
