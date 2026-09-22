@@ -15,8 +15,9 @@ Rules enforced:
     a VISUAL description only (never ask it to draw the game title).
   - Exact GameMonetize dimensions (512x384, 512x512, 512x340), JPEG format.
   - 2 AI images are generated (landscape + square) and cover-cropped to the 3 sizes.
-  - If all AI attempts fail, falls back to PIL-drawn text-free neon thumbs so
-    publishing never blocks.
+  - Submitted assets MUST be AI-generated: with --no-fallback (used by publish.js),
+    an AI failure EXITS 1 instead of drawing PIL substitutes — STOP and report,
+    never publish hand-made assets.
 
 Usage:
   pip install pillow
@@ -182,9 +183,8 @@ def fallback_pil(out_dir: str) -> list[str]:
     for (w, h) in SIZES:
         img = Image.new("RGB", (w, h), (7, 8, 15))
         d = ImageDraw.Draw(img)
-        for _ in range(w * h // 3000):
-            x, y = os.urandom(2)
-            d.point((ord(x) % w, ord(y) % h), fill=(159, 180, 216))
+        for b in os.urandom(w * h // 1500):
+            d.point((b * 131 % w, b * 197 % h), fill=(159, 180, 216))
         cy1, cy2 = h // 3, 2 * h // 3
         d.line([(0, h // 2), (w, h // 2)], fill=(120, 140, 190), width=1)
         r = min(w, h) // 10

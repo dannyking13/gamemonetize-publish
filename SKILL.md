@@ -1,7 +1,7 @@
 ---
 name: gamemonetize-publish
 description: Integrate the GameMonetize SDK into ANY user-provided HTML5 game (any engine — Construct, Phaser, PixiJS, Unity WebGL, Godot, custom canvas) and publish it end-to-end on the GameMonetize developer dashboard — add game, get the GameId, inject it into SDK_OPTIONS, package the ZIP, upload (with the x-zip-compressed MIME trick), generate AI thumbnails (FLUX, no text), fill metadata, run the in-modal "Verify Game" SDK check by actually playing the game, then Request Activation. Use when the user wants to "publish a game on GameMonetize", "integrate gamemonetize sdk", "submit a game to gamemonetize", or "release an html5 game on gamemonetize".
-version: 1.0.0
+version: 2.0.0
 author: buffy
 tags: [games, gamemonetize, sdk, playwright, publishing, ads]
 ---
@@ -16,10 +16,9 @@ portal), (2) generate the 3 required thumbnails with FREE AI generation
 end-to-end on `gamemonetize.com/account` via Playwright — from login to
 **"Request activation"**, without any human interaction.
 
-Everything below was validated in a real end-to-end run (game created →
-GameId `tsoe9hid…` injected → zip uploaded and unpacked → build live →
-`SDK_IMPLEMENTED` returned by the official checker → activation requested,
-game in review).
+Everything below was validated in real end-to-end runs; the Verify recipe in
+§1 (bridge v8 + one-tap robot) passed the official checker on 2026-09-22
+(SDK_IMPLEMENTED → activation unlocked → "Cancel review" = submitted).
 
 The **game is NOT created by the agent**: the user supplies the game (a folder
 with `index.html` or an existing zip). The agent integrates the SDK, prepares
@@ -101,16 +100,56 @@ the server accepts. Thumbnails: same call to `upload_img.php?...&size=N` with
 The build goes live on `uncached.gamemonetize.com/<GameId>/` within seconds of
 the "unpacked" response (poll 3–4×/5s to confirm).
 
-### Verify Game — the SDK check REQUIRES a real ad call
-Clicking `a:has-text("Verify Game")` opens a custom modal
-(`.sparkling-modal-frame`) containing an iframe `#modal-frame` that loads the
-game. The checker inside validates:
-1. the **real SDK** (`sdk.js`) is loaded,
-2. `window.SDK_OPTIONS.gameId` equals **this game's** GameId,
-3. **`sdk.showBanner()` actually gets CALLED during the session** — you must
-   PLAY the game inside the iframe until it naturally triggers an ad break
-   (game over, level end…). When it does, the checker posts
-   `{"type":"SDK_IMPLEMENTED"}` and a real Google IMA ad is served.
+### ⚠️ CDN cache = 10 years per file, per GameId (campaign-proven)
+Served files (from `html5.gamemonetize.co/<GameId>/…`, where the Verify modal
+loads the build) are cached with `cache-control: max-age=315360000` (TEN
+YEARS) — verified via response headers. The `html5.gamemonetize.com/<GameId>`
+301-chain also funnels into that cache (`max-age=432000` at the first hop).
+
+Consequences:
+- **Re-uploading a zip to an EXISTING game NEVER updates what the Verify modal
+  serves.** `uncached.gamemonetize.com` has the new build; the modal CDN keeps
+  serving the old one forever.
+- **If the served build must change → create a NEW game draft** (new GameId =
+  cold cache). The FIRST zip uploaded to a token is the one the checker will
+  see. Decide the build version BEFORE the first upload.
+- Sanity check before verifying: `curl -sL
+  https://html5.gamemonetize.co/<GameId>/<changed-file> | grep -c <vN-marker>`
+  (a version marker string from your driver) — must be > 0.
+
+### Verify Game — EXACT working recipe (validated 2026-09-22)
+Clicking `a:has-text("Verify Game")` opens a modal (`.sparkling-modal-frame`)
+with iframe `#modal-frame` → `https://html5.gamemonetize.co/<GameId>/?m=account&__inmodal=true`.
+The checker posts `{"type":"SDK_IMPLEMENTED"}` to the top window **only when a
+real Google IMA ad completes** (IMA `CONTENT_RESUME_REQUESTED` → SDK posts
+`SDK_IMPLEMENTED`). Decoded from the obfuscated sdk.js — there is no shortcut.
+
+Key facts:
+- **The SDK fires NOTHING on its own at `SDK_READY`.** No auto-preroll. If an
+  ad request appears without a call, it came from game code.
+- **`showBanner` does not exist in sdk.js** — it is installed on the `sdk`
+  object by the page snippet. Calls to it only turn into a REAL IMA request if
+  they happen **inside a genuine user-gesture task** (pointerdown/keydown).
+  Timer/boot/flush calls either fail silently or get the ad request cancelled
+  (`AD_CANCELED "Advertisement has been canceled"`).
+- **ONE tap, then SILENCE.** Robot clicking during the 10–15s ad playback
+  cancels the IMA cycle (multiple `SHOW_BANNER` calls cancel the pending ad).
+  The old 35-clicks-per-round robot ALWAYS failed this way. Exactly one real
+  click inside the frame, then ≥45s of no input, is what validated.
+
+Working robot flow (see `scripts/activate.js`):
+1. Open the modal, find the `html5.gamemonetize.co/` frame.
+2. ONE `frame.click('canvas')` (real coordinates, inside the frame) — the
+   in-game bridge fires THE single `showBanner()` inside that gesture task.
+3. Observe silently ≥45s (the ad plays 10–15s) for `SDK_IMPLEMENTED` in
+   console/postMessage. Do not click again.
+4. Close modal, **reload `editgame.php`**, check
+   `input[name="activation"]:not([disabled])` (server-rendered unlock), click
+   **Request activation**, confirm **"Cancel review"** appears = submitted.
+
+Never verified with: queued boot breaks flushed on first interaction (cancels
+the in-gesture ad), timer-fired open ad (no gesture → AD_CANCELED),
+multi-click "playing" (kills the cycle mid-playback).
 
 ⚠️ The **"Request activation" button state is SERVER-RENDERED at page load**.
 Nothing changes live in the modal flow. After a successful verify you must
@@ -121,11 +160,42 @@ team. (Unlike GamePix, GameMonetize has a "Cancel review" button — the build
 is NOT locked while in review; you can re-upload a new zip anytime.)
 
 ### Ad policy (enforced by review)
-- Frequency-cap `sdk.showBanner()` (e.g. ≥45s between calls) and only at
-  natural breaks (game over, level end) — never timer-based mid-gameplay.
+- Frequency-cap `sdk.showBanner()` (≥45s between calls) and only at natural
+  breaks (game over, level end) — never timer-based mid-gameplay.
 - MANDATORY: on `SDK_GAME_PAUSE` pause the game loop AND mute all audio;
   on `SDK_GAME_START` resume + unmute. Background audio during ads = reject.
-- One ad flow at a time; never call `showBanner()` re-entrantly.
+- One ad flow at a time; never call `showBanner()` re-entrantly. While an ad
+  cycle is in flight, ANY further `showBanner()` cancels it.
+
+### The ONE-AD boot rule for bridged engines (v8 bridge — the proven pattern)
+Engines like Construct call `commercialBreak()` during boot/loading. That call
+must NOT produce a `showBanner()` (no gesture yet → never serves, and it can
+cancel the checker's later ad). The validated bridge (`gm_bridge_poki.js` in
+the campaign, pattern below):
+1. Boot-time breaks are **queued** (promise pending, engine paused).
+2. The **first real interaction** (pointerdown/keydown, capture) fires **the
+   single open `showBanner()` inside the gesture task**, pushes the queue's
+   resolver into the `SDK_GAME_START` resume list (12s hard timeout fallback).
+3. After that, breaks flow normally through the 45s frequency cap.
+4. No timers, no boot flush, no gesture re-fire — ONE ad in ONE gesture.
+
+```js
+var queuedBoot = [], bootAdDone = false, lastBreak = 0;
+var RESUME = [];                                  // released by SDK_GAME_START
+function markInteraction() {                      // pointerdown/keydown capture
+  if (bootAdDone) return; bootAdDone = true;
+  var s = window.sdk, w = queuedBoot.splice(0);
+  lastBreak = Date.now();
+  if (s && s.showBanner) try { s.showBanner(); } catch (e) {}
+  if (w.length) {                                 // release queued boot breaks
+    var fin = function () { w.forEach(function (r) { try { r(); } catch (e) {} }); };
+    RESUME.push(fin); setTimeout(fin, 12000);
+  }
+}
+document.addEventListener('pointerdown', markInteraction, true);
+document.addEventListener('keydown', markInteraction, true);
+// commercialBreak(): if (!bootAdDone) { queuedBoot.push(resolve); return; }
+```
 
 ## 2. Integrate the SDK (mandatory first script)
 
@@ -190,8 +260,12 @@ window.__gmAdBreak = function (onDone) {
 ```
 …and in `SDK_OPTIONS.onEvent`: `case "SDK_GAME_START": window.__gmResumeHook && window.__gmResumeHook();`
 
-A game with NO ad hooks at all: add `sdk.showBanner()` on game-over / level-end
-yourself (find the death/levelComplete handler), plus the pause/mute events.
+- For games from other portals, install the **v8 boot-ad bridge** (§1 "ONE-AD
+  boot rule"): queue boot breaks, fire the single open ad inside the first
+  real gesture task. Reference implementation used in the successful run:
+  C3 games — `game-driver.js` replacing the Poki stub, `commercialBreak()` →
+  queued-then-flushed on first interaction, `rewardedBreak()` → resolve on
+  `SDK_GAME_START` with the 45s cap.
 
 ## 3. Compliance checklist (review will fail otherwise)
 
@@ -205,6 +279,35 @@ yourself (find the death/levelComplete handler), plus the pause/mute events.
 - Description: original, meaningful, no AI boilerplate. Controls field:
   explain input (mouse/drag/keys), Desktop + Mobile.
 - Categories: **min 2**. Tags: pick ~8–10 relevant ones (they are required).
+
+### Asset generation rules (MANDATORY)
+- **Submitted thumbnails MUST be AI-generated** (FLUX via `scripts/gen_assets.py`
+  or the pollinations.ai image API — a real AI engine, no key; retry on 500/429).
+- **NEVER generate/substitute assets yourself** (no PIL fallback, no hand-drawn,
+  no procedurally drawn art in the submission). If the AI generation fails or the
+  quota is exhausted: **STOP and report the problem to the user** — do not publish
+  with substitute assets.
+- `publish.js` runs `gen_assets.py --no-fallback` accordingly: any AI failure
+  aborts the pipeline before upload.
+- Use the optional HF token file `scripts/.hf_token` (or `HF_TOKEN` env) to raise
+  the anonymous ZeroGPU quota — BUT verify the token actually works first: an
+  invalid/expired token makes HF Spaces fail where anonymous requests succeed
+  (observed). Test with a 1-off generation before bulk runs.
+- **PERSIST generated assets in the repo**, never in `/tmp`:
+  `gamemonetize-publish/assets/<game-slug>/thumb_512x{384,512,340}.jpg`.
+  /tmp gets wiped between sessions — assets were lost and re-generated that
+  way. `gen_assets.py --out-dir` points there; publish.js re-uploads from
+  there (`GM_THUMB_DIR=assets/<game-slug>`).
+- Keep the SOURCE images too (square + wide) when regenerating sizes is cheaper
+  than re-generating art.
+
+### Dashboard limits — ALWAYS read them, never exceed
+- Read the actual field limits (min/max, required counts) from the dashboard page
+  and/or `references/dashboard-map.md` before filling anything.
+- Categories: the dashboard requires **min 2** — provide exactly the categories
+  you intend (from the dashboard's own 21 options), **never auto-fill extras** to
+  "reach" a minimum; if the provided list can't satisfy the minimum, FAIL and ask.
+- Same discipline everywhere: description length, tags count, image sizes/dims.
 
 ### Game naming rule (IMPORTANT — read before publishing)
 The GitHub repo name / project folder name is just an **internal label** — the
@@ -250,9 +353,10 @@ The script performs, in order (each step verified):
    `upload_img.php?...&size=1/2/3`.
 8. Fill metadata: name, categories (≥2), tags, desc, controls, width/height,
    mobile checkbox → **Save Changes**.
-9. **Verify Game**: open the modal, PLAY the game inside `#modal-frame`
-   (click + steer, up to ~90s in two rounds) until `SDK_IMPLEMENTED` is
-   observed in the frame's messages/console, close the modal.
+9. **Verify Game**: open the modal, fire **ONE real click inside `#modal-frame`**
+   (the in-game bridge fires the open ad inside that gesture task), then
+   observe silently ≥45s for `SDK_IMPLEMENTED`. Do not click during ad
+   playback. Close the modal.
 10. Reload the edit page → confirm `input[name="activation"]` is enabled →
     click **Request activation** (auto-accept dialogs) → confirm the page now
     shows **"Cancel review"**.
@@ -260,10 +364,12 @@ The script performs, in order (each step verified):
 ### Gotchas that will bite you
 - The zip MIME trap (§1) — never use Dropzone's input for the zip.
 - The activation button only unlocks after a **page reload** post-verify.
-- If verification fails (`SDK_IMPLEMENTED` never seen): check that the iframe
-  actually runs YOUR build (the modal URL contains your GameId), that
-  `sdk.showBanner()` is reachable (death/level path), and that no console
-  errors break the game. Then retry the verify round.
+- If verification fails (`SDK_IMPLEMENTED` never seen): check the served build
+  version first (CDN cache, §1) — the modal may be running an OLD build. Then
+  check `sdk.showBanner()` fired (gesture reached the canvas) and that IMA
+  network requests followed (`gampad/ads` / `pagead`). showBanner without IMA
+  traffic = no gesture context = bridge/boot issue. **Do NOT mash clicks** —
+  clicks during ad playback abort the cycle.
 - `https://gamemonetize.com/dashboard` is a 404; always use `/account/...`.
 - The tags `<select>` is a select2 widget with 579 options; set the underlying
   `select[name="tags[]"]` options via JS + `change` event (works fine), or
@@ -293,8 +399,13 @@ Rules (same as gamepix):
   to the 3 exact GM sizes and saves as JPEG (quality 88, well under limits).
 - Spaces tried in order: `FLUX.1-schnell` (fast) then `FLUX.1-dev`, with
   exponential backoff (anonymous ZeroGPU quota is per-IP and rolling).
-- If all AI attempts fail, falls back to PIL-drawn text-free neon thumbs so
-  publishing never blocks.
+- ⚠️ The PIL fallback is **DISABLED for submissions** (`--no-fallback`): if all
+  AI attempts fail, the script **exits non-zero and publishing stops**. The
+  fallback output is only for local mock testing, never for a live upload.
+- Backup AI engine when every HF Space is saturated: pollinations.ai
+  (`https://image.pollinations.ai/prompt/<urlencoded>?width=768&height=768&nologo=true&seed=<rand>`
+  — free, no key, AI-generated; retry a few times on 500/429). Cover-crop the
+  two source images into the 3 GM sizes with the same rules (no text).
 
 ## 6. What "done" looks like
 

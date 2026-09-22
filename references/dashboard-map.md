@@ -1,4 +1,14 @@
-# GameMonetize dashboard map (verified Sept 2026)
+# GameMonetize dashboard map
+
+## Categories — the EXACT 21 valid options (verified Sept 2026)
+`.IO, 2 Player, 3D, Action, Adventure, AI, Arcade, Baby Hazel, Bejeweled, Boys,
+Clicker, Cooking, Girls, Hypercasual, Multiplayer, Puzzle, Racing, Shooting,
+Soccer, Sports, Stickman`
+
+Min 2 required. Use ONLY these names in GM_CATEGORIES (e.g. `Arcade,Hypercasual`).
+There is NO "Casual", NO "Platformer", NO "Skill" — publishing fails fast on
+unknown names (by design). Note: some options render lazily in the select;
+scroll the select or use scripts/list_cats.js to enumerate them. (verified Sept 2026)
 
 All URLs relative to `https://gamemonetize.com`.
 

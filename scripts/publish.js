@@ -110,8 +110,9 @@ async function createGame(page) {
   await page.goto('https://gamemonetize.com/account/gameadd.php', { waitUntil: 'domcontentloaded', timeout: 60000 });
   await page.waitForTimeout(4000);
   await page.locator('input[name="name"]').first().fill(CFG.title);
+  // nameid is server/JS-auto-slugged from name and usually INVISIBLE — only fill it if visible & empty
   const nameid = page.locator('input[name="nameid"]').first();
-  if (await nameid.count() && !(await nameid.inputValue())) {
+  if (await nameid.count() && !(await nameid.inputValue()) && await nameid.isVisible().catch(() => false)) {
     await nameid.fill(CFG.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, ''));
   }
   await page.locator('button:has-text("Add Game")').first().click();
@@ -193,7 +194,8 @@ async function ensureThumbs() {
     log('thumb dir incomplete — regenerating with AI');
   }
   if (!CFG.prompt) throw new Error('GM_PROMPT required to generate thumbnails (or set GM_THUMB_DIR)');
-  execSync(`python3 "${path.join(ROOT, 'gen_assets.py')}" --prompt ${JSON.stringify(CFG.prompt)} --out-dir "${path.join(ROOT, '.gm_assets')}"`, { stdio: 'inherit' });
+  // --no-fallback: submitted assets MUST be AI-generated. If AI fails => STOP, never submit hand-made assets.
+  execSync(`python3 "${path.join(ROOT, 'gen_assets.py')}" --no-fallback --prompt ${JSON.stringify(CFG.prompt)} --out-dir "${path.join(ROOT, '.gm_assets')}"`, { stdio: 'inherit' });
   return sizes.map(s => path.join(ROOT, '.gm_assets', `thumb_${s}.jpg`));
 }
 
@@ -214,15 +216,24 @@ async function fillMetadata(page) {
   // name
   await page.locator('input[name="name"]').first().fill(CFG.title);
 
-  // categories (min 2) — native multi-select
-  const cats = CFG.categories.split(',').map(s => s.trim()).filter(Boolean);
-  try {
-    await page.selectOption('select[name="category[]"]', cats);
-    log('categories set:', cats.join(', '));
-  } catch (e) { log('category select fallback needed:', String(e).slice(0, 100)); }
+  // categories (min 2) — native multi-select; set via JS (Playwright selectOption fails on actionability here)
+  const wanted = CFG.categories.split(',').map(s => s.trim()).filter(Boolean);
+  const setSel = await page.evaluate((names) => {
+    const sel = document.querySelector('select[name="category[]"]');
+    if (!sel) return [];
+    [...sel.options].forEach(o => { o.selected = false; });   // clear stale selections first
+    const out = [];
+    [...sel.options].forEach(o => { if (names.includes(o.text)) { o.selected = true; out.push(o.text); } });
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+    return out;
+  }, wanted);
+  // NEVER auto-fill extra categories beyond the requested list: read the platform limit
+  // (min 2 here) and fail loudly if the provided list can't satisfy it.
+  if (setSel.length < 2) throw new Error('only ' + setSel.length + ' valid category(ies) in GM_CATEGORIES (' + setSel.join(', ') + ') — dashboard requires >= 2. Fix GM_CATEGORIES with exact dashboard option names.');
+  log('categories set:', setSel.join(', '), '(' + setSel.length + '/2 min — nothing auto-added)');
 
   // tags — select2-backed multi-select: set underlying options via JS + change event
-  const wanted = CFG.tags.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+  const tagNames = CFG.tags.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
   const picked = await page.evaluate((names) => {
     const sel = document.querySelector('select[name="tags[]"]');
     if (!sel) return [];
@@ -230,7 +241,7 @@ async function fillMetadata(page) {
     [...sel.options].forEach(o => { if (names.includes((o.text || '').toLowerCase())) { o.selected = true; out.push(o.text); } });
     sel.dispatchEvent(new Event('change', { bubbles: true }));
     return out;
-  }, wanted);
+  }, tagNames);
   log('tags set:', JSON.stringify(picked));
 
   // description / controls / dimensions
@@ -265,17 +276,17 @@ async function verifyGame(ctx, page) {
   };
   page.on('console', onConsole);
 
-  // PLAY the game inside the modal until the checker validates (2 rounds)
-  for (let round = 0; round < 2 && !implemented; round++) {
-    log(`playing round ${round + 1}/2 in the verify iframe...`);
-    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-    for (let i = 0; i < 40 && !implemented; i++) {
+  // PLAY the game inside the modal until the checker validates (3 rounds).
+  // C3 games usually start on tap/Space and hit an ad break at start or game-over.
+  for (let round = 0; round < 3 && !implemented; round++) {
+    log(`playing round ${round + 1}/3 in the verify iframe...`);
+    for (let i = 0; i < 45 && !implemented; i++) {
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);   // keeps iframe focus
       await page.mouse.move(box.x + 80 + Math.random() * (box.width - 160), box.y + box.height / 2);
-      await sleep(950);
-      if (i === 0) await page.keyboard.press('Enter').catch(() => {});
+      if (i % 5 === 0) for (const k of ['Space', 'Enter', 'ArrowUp']) await page.keyboard.press(k).catch(() => {});
+      await sleep(900);
     }
     if (!implemented) {
-      // maybe a game-over screen needs a click to restart
       await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.62);
       await sleep(1500);
     }
