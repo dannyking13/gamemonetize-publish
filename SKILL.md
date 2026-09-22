@@ -293,8 +293,9 @@ window.__gmAdBreak = function (onDone) {
   the anonymous ZeroGPU quota — BUT verify the token actually works first: an
   invalid/expired token makes HF Spaces fail where anonymous requests succeed
   (observed). Test with a 1-off generation before bulk runs.
-- **PERSIST generated assets in the repo**, never in `/tmp`:
-  `gamemonetize-publish/assets/<game-slug>/thumb_512x{384,512,340}.jpg`.
+- **PERSIST generated assets in the repo**, never in `/tmp` or a git-ignored
+  dir: `gamemonetize-publish/assets/<game-slug>/thumb_512x{384,512,340}.jpg`
+  (publish.js writes there by default).
   /tmp gets wiped between sessions — assets were lost and re-generated that
   way. `gen_assets.py --out-dir` points there; publish.js re-uploads from
   there (`GM_THUMB_DIR=assets/<game-slug>`).
@@ -324,7 +325,10 @@ the zip, no text on the assets). Therefore:
 
 ## 4. Automated publishing via Playwright
 
-Full working implementation: `scripts/publish.js` (this repo). Usage:
+Full working implementation: `scripts/publish.js` (this repo). The Verify
+step uses the §1 ONE-tap recipe (one real tap inside the frame, then ≥45s of
+silence — the old multi-click robot cancels the IMA cycle and is gone).
+Usage:
 
 ```bash
 GM_EMAIL=you@example.com GM_PASSWORD='secret' \
@@ -415,8 +419,9 @@ Rules (same as gamepix):
   fallback output is only for local mock testing, never for a live upload.
 - Backup AI engine when every HF Space is saturated: pollinations.ai
   (`https://image.pollinations.ai/prompt/<urlencoded>?width=768&height=768&nologo=true&seed=<rand>`
-  — free, no key, AI-generated; retry a few times on 500/429). Cover-crop the
-  two source images into the 3 GM sizes with the same rules (no text).
+  — free, no key, AI-generated; retry a few times on 500/429). **Implemented
+  in `gen_assets.py`** (`gen_image_pollinations`): automatic FLUX →
+  pollinations fallback, still `--no-fallback` for the PIL fallback.
 
 ## 6. What "done" looks like
 

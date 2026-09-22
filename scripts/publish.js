@@ -144,7 +144,8 @@ async function injectGameId() {
   if (html.includes(PLACEHOLDER)) {
     html = html.replace(PLACEHOLDER, GAME_ID);
   } else if (CFG.injectSdk || /SDK_OPTIONS/.test(html)) {
-    html = html.replace(/gameId:\s*"[^"]*"/, `gameId: "${GAME_ID}"`);
+    // target the gameId INSIDE SDK_OPTIONS (not another SDK's gameId that may appear earlier)
+    html = html.replace(/SDK_OPTIONS[\s\S]{0,400}?gameId:\s*["']([a-zA-Z0-9_-]*)["']/, m => m.replace(/gameId:\s*["']([a-zA-Z0-9_-]*)["']/, `gameId: "${GAME_ID}"`));
     if (!html.includes(`gameId: "${GAME_ID}"`)) throw new Error('could not inject GameId — no SDK_OPTIONS gameId found. Add the SDK snippet (SKILL.md §2).');
   } else {
     throw new Error('index.html has no SDK integration and GM_INJECT_SDK is not set. Integrate the SDK first (SKILL.md §2).');
@@ -155,9 +156,10 @@ async function injectGameId() {
 
 async function packageZip() {
   if (CFG.zip) { log('using provided zip:', CFG.zip); return CFG.zip; }
-  const zipPath = path.join(ROOT, `${CFG.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'game'}-1.0.0.zip`);
+  const zipPath = path.join(ROOT, `${CFG.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'game'}.zip`);
   if (fs.existsSync(zipPath)) fs.unlinkSync(zipPath);
-  execSync(`cd "${path.resolve(CFG.gameDir)}" && zip -q -r "${zipPath}" .`, { stdio: 'inherit' });
+  // -x excludes OS/editor junk; index.html must sit at the archive ROOT
+  execSync(`cd "${path.resolve(CFG.gameDir)}" && zip -q -r "${zipPath}" . -x "*.DS_Store" -x "Thumbs.db" -x "*.git*" -x "node_modules/*" -x ".agents/*" -x ".vscode/*"`, { stdio: 'inherit' });
   const kb = (fs.statSync(zipPath).size / 1024).toFixed(1);
   log('zip packaged:', zipPath, `(${kb} KB)`);
   return zipPath;
@@ -194,9 +196,14 @@ async function ensureThumbs() {
     log('thumb dir incomplete — regenerating with AI');
   }
   if (!CFG.prompt) throw new Error('GM_PROMPT required to generate thumbnails (or set GM_THUMB_DIR)');
+  // PERSIST assets in the repo (SKILL.md §3), never in /tmp or a git-ignored dir:
+  // out-dir = <repo>/assets/<game-slug>/ so thumbnails survive between sessions.
+  const slug = (CFG.title.toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'game');
+  const outDir = path.join(ROOT, '..', 'assets', slug);
+  fs.mkdirSync(outDir, { recursive: true });
   // --no-fallback: submitted assets MUST be AI-generated. If AI fails => STOP, never submit hand-made assets.
-  execSync(`python3 "${path.join(ROOT, 'gen_assets.py')}" --no-fallback --prompt ${JSON.stringify(CFG.prompt)} --out-dir "${path.join(ROOT, '.gm_assets')}"`, { stdio: 'inherit' });
-  return sizes.map(s => path.join(ROOT, '.gm_assets', `thumb_${s}.jpg`));
+  execSync(`python3 "${path.join(ROOT, 'gen_assets.py')}" --no-fallback --prompt ${JSON.stringify(CFG.prompt)} --out-dir "${outDir}"`, { stdio: 'inherit' });
+  return sizes.map(s => path.join(outDir, `thumb_${s}.jpg`));
 }
 
 async function uploadThumbs(ctx, thumbs) {
@@ -205,7 +212,9 @@ async function uploadThumbs(ctx, thumbs) {
     const r = await ctx.request.post(
       `https://gamemonetize.com/account/upload_img.php?gameid=${GAME_ID}&id=${NUM_ID}&size=${i + 1}`,
       { multipart: { file: { name: 'thumb.jpg', mimeType: 'image/jpeg', buffer: buf } }, timeout: 60000 });
-    log(`thumb size=${i + 1} (${path.basename(thumbs[i])}):`, r.status(), (await r.text()).slice(0, 80));
+    const body = await r.text();
+    log(`thumb size=${i + 1} (${path.basename(thumbs[i])}):`, r.status(), body.slice(0, 80));
+    if (r.status() !== 200) throw new Error(`thumbnail size=${i + 1} upload failed (HTTP ${r.status()}): ${body}`);
   }
 }
 
@@ -256,12 +265,32 @@ async function fillMetadata(page) {
   await page.locator('button:has-text("Save Changes")').first().click();
   await page.waitForTimeout(6000);
   log('metadata saved (url:', page.url() + ')');
+
+  // SKILL.md §4: re-check the fields persisted after saving (plain form POST — silent drops happen)
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(5000);
+  const persisted = await page.evaluate(() => {
+    const name = (document.querySelector('input[name="name"]') || {}).value || '';
+    const cats = [...document.querySelectorAll('select[name="category[]"] option:checked')].map(o => o.text);
+    const desc = (document.querySelector('textarea[name="desc"]') || {}).value || '';
+    return { name, cats, desc };
+  });
+  const problems = [];
+  if (CFG.title && persisted.name !== CFG.title) problems.push(`name not persisted ("${persisted.name}")`);
+  if (CFG.desc && persisted.desc !== CFG.desc) problems.push(`desc not persisted (${persisted.desc.length}/${CFG.desc.length} chars)`);
+  const wantedCats = CFG.categories.split(',').map(s => s.trim()).filter(Boolean);
+  if (wantedCats.length && wantedCats.some(c => !persisted.cats.includes(c))) problems.push(`categories not persisted (got: ${persisted.cats.join(', ')})`);
+  if (problems.length) throw new Error('metadata save NOT confirmed: ' + problems.join('; '));
+  log('metadata verified after save (name, categories, desc persisted)');
 }
 
 async function verifyGame(ctx, page) {
+  // ⚠️ ONE real tap inside the frame, then SILENCE (SKILL.md §1: the proven recipe,
+  // validated 2026-09-22). The old multi-click robot cancels the IMA ad cycle:
+  // extra clicks during the 10–15s ad playback abort it (AD_CANCELED).
   log('opening Verify Game modal...');
   await page.locator('a:has-text("Verify Game")').first().click();
-  await page.waitForTimeout(8000);
+  await page.waitForTimeout(9000);
 
   const frameEl = await page.$('#modal-frame');
   if (!frameEl) throw new Error('verify modal iframe not found');
@@ -276,24 +305,21 @@ async function verifyGame(ctx, page) {
   };
   page.on('console', onConsole);
 
-  // PLAY the game inside the modal until the checker validates (3 rounds).
-  // C3 games usually start on tap/Space and hit an ad break at start or game-over.
-  for (let round = 0; round < 3 && !implemented; round++) {
-    log(`playing round ${round + 1}/3 in the verify iframe...`);
-    for (let i = 0; i < 45 && !implemented; i++) {
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);   // keeps iframe focus
-      await page.mouse.move(box.x + 80 + Math.random() * (box.width - 160), box.y + box.height / 2);
-      if (i % 5 === 0) for (const k of ['Space', 'Enter', 'ArrowUp']) await page.keyboard.press(k).catch(() => {});
-      await sleep(900);
-    }
-    if (!implemented) {
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height * 0.62);
-      await sleep(1500);
-    }
+  // The game's bridge fires the single open showBanner() INSIDE this gesture task.
+  const gameFrame = page.frames().find(f => /html5\.gamemonetize\.co\//.test(f.url())) || null;
+  if (gameFrame) {
+    try { await gameFrame.click('canvas', { timeout: 3000, position: { x: 300, y: 300 } }); log('ONE tap inside the game frame — now silent'); }
+    catch (e) { await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {}); log('canvas click failed — one tap on the iframe instead'); }
+  } else {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+    log('ONE tap on the iframe — now silent');
   }
+
+  // Observe silently >= 45s (the ad plays 10–15s). Do NOT click again.
+  for (let i = 0; i < 45 && !implemented; i++) await sleep(1000);
   page.off('console', onConsole);
 
-  if (!implemented) log('WARNING: SDK_IMPLEMENTED not observed — SDK may still register async; will reload and check activation anyway');
+  if (!implemented) log('WARNING: SDK_IMPLEMENTED not observed — see SKILL.md gotchas (served build version / gesture / IMA traffic). Try scripts/activate.js later.');
   else log('SDK verification PASSED');
 
   // close modal

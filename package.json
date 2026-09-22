@@ -1,6 +1,6 @@
 {
   "name": "gamemonetize-publish",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Integrate the GameMonetize SDK into any HTML5 game and publish it end-to-end on the GameMonetize dashboard (Playwright automation + AI assets)",
   "main": "scripts/publish.js",
   "scripts": {

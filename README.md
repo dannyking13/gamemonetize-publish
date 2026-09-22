@@ -17,7 +17,12 @@ human interaction. Companion skill to
 2. **AI thumbnails** — generates the 3 required JPGs
    (512×384, 512×512, 512×340) with FLUX via Hugging Face's anonymous Gradio
    API: **no account, no API key**, text-free by construction (same method as
-   gamepix-publish, PIL fallback so publishing never blocks).
+   gamepix-publish; pollinations.ai as backup engine when every Space is
+   saturated). Submitted assets MUST be AI-generated: the PIL fallback is
+   DISABLED for submissions (`--no-fallback`) — if every engine fails,
+   publishing STOPS and the problem is reported. Thumbnails are persisted in
+   `assets/<game-slug>/` so they survive between sessions and can be reused
+   via `GM_THUMB_DIR`.
 3. **ZIP packaging** — `index.html` at the archive root, all paths relative.
 4. **Dashboard automation (Playwright)** — login → Add Game → capture the
    32-char **GameId** → inject it into `SDK_OPTIONS` → direct multipart upload
@@ -33,11 +38,14 @@ human interaction. Companion skill to
 ```
 SKILL.md                  ← the skill: read this first (platform knowledge, SDK doc, gotchas)
 scripts/publish.js        ← one-shot end-to-end publisher (env-var driven)
-scripts/gen_assets.py     ← AI thumbnails (FLUX anonymous, 3 exact GM sizes)
+scripts/activate.js       ← verify + request activation ONLY (re-run a stuck game)
+scripts/gen_assets.py     ← AI thumbnails (FLUX anonymous + pollinations backup, 3 exact GM sizes)
 scripts/.gm_credentials   ← git-ignored: line1 = email, line2 = password (or use GM_EMAIL/GM_PASSWORD)
 scripts/.hf_token         ← git-ignored: optional HF token to raise FLUX quota
 scripts/.gm_session.json  ← saved browser session (created automatically)
 references/dashboard-map.md ← verified URL + selector map of the dashboard
+assets/<game-slug>/        ← persisted generated thumbnails (reused via GM_THUMB_DIR)
+LICENSE                    ← MIT
 ```
 
 ## Quick start

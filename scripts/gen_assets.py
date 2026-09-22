@@ -4,6 +4,8 @@
 Same proven method as gamepix-publish/scripts/gen_assets.py: anonymous Gradio API
 of Hugging Face Spaces running FLUX — a plain POST + SSE read gives an image URL;
 no signup, no API key. Optional HF_TOKEN raises the ZeroGPU anonymous quota.
+Backup engine when every HF Space is saturated: pollinations.ai (free, no key,
+AI-generated) — SKILL.md §5.
 
 Outputs (in --out-dir), JPG, no text:
   thumb_512x384.jpg   (dashboard slot size=1)
@@ -115,6 +117,43 @@ def download(url: str, out: str) -> None:
         f.write(r.read())
 
 
+def gen_image_pollinations(prompt: str, width: int, height: int, seed: int,
+                           retries: int = 4, backoff: int = 15) -> str:
+    """Backup engine when every HF Space is saturated: pollinations.ai.
+    Free, no key, AI-generated; retry a few times on 500/429 (SKILL.md §5)."""
+    import urllib.parse
+    last = None
+    url = ("https://image.pollinations.ai/prompt/" + urllib.parse.quote(prompt)
+           + f"?width={width}&height={height}&nologo=true&seed={seed}")
+    for i in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=180) as r:
+                ctype = r.headers.get("Content-Type", "")
+                if not ctype.startswith("image/"):
+                    raise RuntimeError(f"unexpected content-type: {ctype}")
+                return url
+        except Exception as e:  # noqa: BLE001
+            last = e
+            print(f"  pollinations try {i+1}/{retries}: {e}")
+            if i < retries - 1:
+                time.sleep(backoff * (i + 1))
+    raise RuntimeError(f"pollinations failed: {last}")
+
+
+def gen_source(prompt: str, width: int, height: int, seed: int, retries: int,
+               out_path: str) -> None:
+    """FLUX (HF Spaces) first; pollinations.ai only when every Space fails."""
+    try:
+        url = gen_image(prompt, width, height, seed, retries)
+        download(url, out_path)
+        return
+    except Exception as e:  # noqa: BLE001
+        print(f"  all HF Spaces failed ({e}) — falling back to pollinations.ai")
+    url = gen_image_pollinations(prompt, width, height, seed, retries)
+    download(url, out_path)
+
+
 def gen_image(prompt: str, width: int, height: int, seed: int,
               retries: int = 4, backoff: int = 20) -> str:
     last = None
@@ -155,12 +194,10 @@ def make_thumbs(prompt: str, out_dir: str, seed: int, retries: int) -> list[str]
     tmp2 = os.path.join(out_dir, ".gen_tmp_square")
 
     print("[1/3] Generating wide art (1024x768)...")
-    url = gen_image(WIDE_PROMPT.format(p=prompt, n=NO_TEXT), 1024, 768, seed, retries)
-    download(url, tmp)
+    gen_source(WIDE_PROMPT.format(p=prompt, n=NO_TEXT), 1024, 768, seed, retries, tmp)
 
     print("[2/3] Generating square art (1024x1024)...")
-    url = gen_image(SQUARE_PROMPT.format(p=prompt, n=NO_TEXT), 1024, 1024, seed + 100, retries)
-    download(url, tmp2)
+    gen_source(SQUARE_PROMPT.format(p=prompt, n=NO_TEXT), 1024, 1024, seed + 100, retries, tmp2)
 
     outs = []
     for (w, h) in SIZES:
