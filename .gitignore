@@ -6,3 +6,7 @@ node_modules/
 *.zip
 __pycache__/
 scripts/.hf_token*
+package-lock.json
+scripts/delete_probe.png
+scripts/diag_86772.png
+scripts/gm_publish_final.png

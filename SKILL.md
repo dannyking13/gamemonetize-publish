@@ -262,10 +262,20 @@ window.__gmAdBreak = function (onDone) {
 
 - For games from other portals, install the **v8 boot-ad bridge** (§1 "ONE-AD
   boot rule"): queue boot breaks, fire the single open ad inside the first
-  real gesture task. Reference implementation used in the successful run:
-  C3 games — `game-driver.js` replacing the Poki stub, `commercialBreak()` →
-  queued-then-flushed on first interaction, `rewardedBreak()` → resolve on
-  `SDK_GAME_START` with the 45s cap.
+  real gesture task. **Ready-made bridges live in `bridges/`** (proven on live
+  verify runs):
+  - `bridges/poki-gm-v8.js` — C3 games expecting a PokiSDK surface
+    (`commercialBreak`/`rewardedBreak` → queued-then-fired on first gesture).
+  - `bridges/gamesnacks-gm-v8.js` — GameSnacks-surface games (GameSnacks.ad.break
+    `{type:"next"|"reward", beforeAd, beforeReward, showAdFn, adViewed, afterAd,
+    adBreakDone}`, game/audio/storage/score). Replace the offline stub
+    `game-driver.js` with it; keep the H5 reward semantics: no acceptance within
+    400 ms → `adBreakDone({breakStatus:"dismissed"})`; on `showAdFn()` fire the GM
+    ad in-gesture, then `adViewed` → `afterAd` → `adBreakDone("viewed")`.
+  - Batch preparer: `scripts/prepare_gamesnacks_batch.py` (copy repo → retitle →
+    swap driver → inject SDK placeholder `__GM_GAME_ID__` → zip).
+  - Validated 2026-09-23: Frosty Rush (86812), Dark Hood (86813), Pocket Golf
+    (86814) — all three passed verify first-try with the GameSnacks bridge.
 
 ## 3. Compliance checklist (review will fail otherwise)
 
@@ -283,6 +293,14 @@ window.__gmAdBreak = function (onDone) {
 ### Asset generation rules (MANDATORY)
 - **Submitted thumbnails MUST be AI-generated** (FLUX via `scripts/gen_assets.py`
   or the pollinations.ai image API — a real AI engine, no key; retry on 500/429).
+- **FIDELITY FIRST**: the thumbnail must look like the GAME. Before writing the
+  prompt, screenshot real gameplay (menu + in-level) and describe what is on
+  screen — protagonist, objects, palette, art style — never the title's literal
+  words (2026-09-23: prompts written from screenshots produced on-target art;
+  title-based prompts produced off-topic photos).
+- Known issue: pollinations adds a small "pollinations.ai" watermark and skews
+  photographic. Prefer FLUX results; re-roll off-topic generations with a more
+  literal prompt (subject + objects + style), keep the best on-topic set.
 - **NEVER generate/substitute assets yourself** (no PIL fallback, no hand-drawn,
   no procedurally drawn art in the submission). If the AI generation fails or the
   quota is exhausted: **STOP and report the problem to the user** — do not publish
