@@ -366,6 +366,15 @@ The script performs, in order (each step verified):
     shows **"Cancel review"**.
 
 ### Gotchas that will bite you
+- **Sandboxed/headless Chromium has NO WebGL → C3 (Construct) games NEVER boot**
+  (`supportcheck.js` sets `C3_IsSupported=false`, page shows "Software update
+  needed", zero console errors, no canvas, verify silently fails). ALWAYS launch
+  the browser with `--enable-unsafe-swiftshader --use-gl=angle
+  --use-angle=swiftshader --ignore-gpu-blocklist`, and verify with a quick probe
+  (`canvas exists` + `window.C3_IsSupported`) before firing the verify tap.
+- The verify modal serves the game from `uncached.gamemonetize.co` (note `.co`),
+  not `html5.gamemonetize.co` — match game frames with `/gamemonetize\.co\//`
+  AND exclude `/gamemonetize\.com/` (the dashboard domain ends in `.com`).
 - The zip MIME trap (§1) — never use Dropzone's input for the zip.
 - The activation button only unlocks after a **page reload** post-verify.
 - If verification fails (`SDK_IMPLEMENTED` never seen): check the served build

@@ -55,7 +55,9 @@ let GAME_ID = null;            // 32-char GameId
 
 // ---------------------------------------------------------------- browser
 async function launch() {
-  const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'] });
+  const exeCandidates = [process.env.GM_CHROME, '/root/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome'];
+  const executablePath = exeCandidates.find(p => p && fs.existsSync(p));
+  const browser = await chromium.launch({ headless: false, executablePath, args: ['--disable-blink-features=AutomationControlled', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
   const ctx = await browser.newContext({
     viewport: { width: 1360, height: 1000 }, userAgent: UA,
     storageState: fs.existsSync(SESSION) ? SESSION : undefined,
@@ -306,7 +308,7 @@ async function verifyGame(ctx, page) {
   page.on('console', onConsole);
 
   // The game's bridge fires the single open showBanner() INSIDE this gesture task.
-  const gameFrame = page.frames().find(f => /html5\.gamemonetize\.co\//.test(f.url())) || null;
+  const gameFrame = page.frames().find(f => /gamemonetize\.co\//.test(f.url()) && !/gamemonetize\.com/.test(f.url())) || null;
   if (gameFrame) {
     try { await gameFrame.click('canvas', { timeout: 3000, position: { x: 300, y: 300 } }); log('ONE tap inside the game frame — now silent'); }
     catch (e) { await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {}); log('canvas click failed — one tap on the iframe instead'); }

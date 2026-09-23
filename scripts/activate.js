@@ -31,7 +31,9 @@ async function login(ctx, page) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ headless: false, args: ['--disable-blink-features=AutomationControlled'] });
+  const exeCandidates = [process.env.GM_CHROME, '/root/.cache/ms-playwright/chromium-1243/chrome-linux64/chrome'];
+  const executablePath = exeCandidates.find(p => p && fs.existsSync(p));
+  const browser = await chromium.launch({ headless: false, executablePath, args: ['--disable-blink-features=AutomationControlled', '--enable-unsafe-swiftshader', '--use-gl=angle', '--use-angle=swiftshader', '--ignore-gpu-blocklist'] });
   const ctx = await browser.newContext({ viewport: { width: 1360, height: 1000 }, userAgent: UA, storageState: fs.existsSync(SESSION) ? SESSION : undefined });
   await ctx.addInitScript(() => {
     try {
@@ -84,7 +86,7 @@ async function login(ctx, page) {
   };
   page.on('console', onConsole);
 
-  const gameFrame = page.frames().find(f => /html5\.gamemonetize\.co\//.test(f.url())) || null;
+  const gameFrame = page.frames().find(f => /gamemonetize\.co\//.test(f.url())) || null;
   if (gameFrame) {
     try {
       const st = await gameFrame.evaluate(() => ({
@@ -101,14 +103,24 @@ async function login(ctx, page) {
 
   // ONE real tap inside the frame (the v8 bridge fires the open ad in-gesture),
   // then SILENT observation — extra clicks during ad playback break the cycle.
+  // Wait for the game canvas to actually exist first (C3 boot in the modal can
+  // take 20-40s under Xvfb; a tap before that never reaches the bridge).
   for (let round = 0; round < 1 && !implemented; round++) {
-    log(`tap round ${round + 1}: one gesture, then watching 45s...`);
-    if (gameFrame) {
-      try { await gameFrame.click('canvas', { timeout: 3000, position: { x: 300, y: 300 } }); }
-      catch (e) { await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {}); }
-    } else {
-      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {});
+    log(`tap round ${round + 1}: waiting for game canvas, then one gesture + 45s silence...`);
+    let tapped = false;
+    for (let w = 0; w < 45 && !tapped; w++) {
+      const gf = page.frames().find(f => /gamemonetize\.co\//.test(f.url()) && !/gamemonetize\.com/.test(f.url()));
+      if (gf) {
+        try {
+          await gf.waitForSelector('canvas', { timeout: 1000 });
+          try { await gf.click('canvas', { timeout: 3000, position: { x: 300, y: 300 } }); log('ONE tap on the game canvas — now silent'); }
+          catch (e) { await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {}); log('ONE tap on the iframe — now silent'); }
+          tapped = true;
+        } catch (e) { if (w % 5 === 0) log(`  canvas not in frame yet (${w + 1}/45)...`); }
+      } else if (w % 5 === 0) log(`  game frame not found yet (${w + 1}/45)...`);
+      if (!tapped) await sleep(1000);
     }
+    if (!tapped) { await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2).catch(() => {}); log('fallback: ONE tap on the iframe — now silent'); }
     for (let i = 0; i < 45 && !implemented; i++) await sleep(1000);
     if (gameFrame) {
       try { const st = await gameFrame.evaluate(() => ({ banner: window.__bannerCalls || 0 })); log(`  bannerCalls after round ${round + 1}:`, st.banner); } catch (e) {}
